@@ -1,0 +1,8 @@
+# Configure file for libdrm-udl.
+#
+# debug=1
+# log-file=
+# dirtyfb-mode=fake
+# udl-force-on=0
+# hide-udl=0
+# force-fullscreen=0

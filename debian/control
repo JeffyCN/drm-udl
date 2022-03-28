@@ -1,0 +1,22 @@
+Source: libdrm-udl
+Priority: optional
+Maintainer: Jeffy Chen <jeffy.chen@rock-chips.com>
+Build-Depends: debhelper (>= 9),
+               meson,
+               pkg-config,
+               libdrm-dev,
+Standards-Version: 3.9.8
+Section: libs
+Homepage: https://github.com/JeffyCN/libdrm-udl
+Vcs-Git: https://github.com/JeffyCN/libdrm-udl
+Vcs-Browser: https://github.com/JeffyCN/libdrm-udl
+
+Package: libdrm-udl-dev
+Section: libdevel
+Architecture: any
+Description: A hook of legacy DRM APIs to integrate UDL to primary DRM device.
+
+Package: libdrm-udl
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: A hook of legacy DRM APIs to integrate UDL to primary DRM device.
