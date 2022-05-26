@@ -34,6 +34,8 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+#include <drm_fourcc.h>
+
 #define LIBDRM_UDL_VERSION "1.0.0~20220428"
 
 static int drm_debug = 0;
@@ -66,6 +68,17 @@ static drmModeFB2Ptr (* _drmModeGetFB2)(int fd, uint32_t bufferId) = NULL;
 static int (* _drmModeAddFB)(int fd, uint32_t width, uint32_t height,
                              uint8_t depth, uint8_t bpp, uint32_t pitch,
                              uint32_t bo_handle, uint32_t *buf_id) = NULL;
+static int (* _drmModeAddFB2)(int fd, uint32_t width, uint32_t height,
+                              uint32_t pixel_format, const uint32_t bo_handles[4],
+                              const uint32_t pitches[4], const uint32_t offsets[4],
+                              uint32_t *buf_id, uint32_t flags) = NULL;
+static int (* _drmModeAddFB2WithModifiers)(int fd, uint32_t width, uint32_t height,
+                                           uint32_t pixel_format,
+                                           const uint32_t bo_handles[4],
+                                           const uint32_t pitches[4],
+                                           const uint32_t offsets[4],
+                                           const uint64_t modifier[4],
+                                           uint32_t *buf_id, uint32_t flags) = NULL;
 static int (* _drmModeRmFB)(int fd, uint32_t bufferId) = NULL;
 static int (* _drmModeDirtyFB)(int fd, uint32_t bufferId,
                                drmModeClipPtr clips, uint32_t num_clips) = NULL;
@@ -128,6 +141,8 @@ static struct {
   DRM_SYMBOL(drmModeGetFB2),
 #endif
   DRM_SYMBOL(drmModeAddFB),
+  DRM_SYMBOL(drmModeAddFB2),
+  DRM_SYMBOL(drmModeAddFB2WithModifiers),
   DRM_SYMBOL(drmModeRmFB),
   DRM_SYMBOL(drmModeDirtyFB),
   DRM_SYMBOL(drmModeGetCrtc),
@@ -561,12 +576,47 @@ drmModeFB2Ptr drmModeGetFB2(int fd, uint32_t fb_id)
 }
 #endif
 
+static uint32_t udl_import_handle(int fd, uint32_t handle,
+                                  uint32_t width, uint32_t height,
+                                  uint32_t stride, uint32_t format)
+{
+  uint32_t handles[4] = { 0, };
+  uint32_t strides[4] = { 0, };
+  uint32_t offsets[4] = { 0, };
+  uint32_t fb_id;
+  int dma_fd, ret;
+
+  ret = drmPrimeHandleToFD(fd, handle, DRM_CLOEXEC | DRM_RDWR, &dma_fd);
+  if (ret < 0)
+    return 0;
+
+  ret = drmPrimeFDToHandle(udl_ctx.fd, dma_fd, &handle);
+  close(dma_fd);
+  if (ret < 0)
+    return 0;
+
+  handles[0] = handle;
+  strides[0] = stride;
+  _drmModeAddFB2(udl_ctx.fd, width, height, format, handles, strides, offsets,
+                 &fb_id, 0);
+  drmCloseBufferHandle(udl_ctx.fd, handle);
+
+  return fb_id;
+}
+
+static bool udl_format_supported(uint32_t format)
+{
+  return format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888 ||
+    format == DRM_FORMAT_RGB565;
+}
+
 int drmModeAddFB(int fd, uint32_t width, uint32_t height, uint8_t depth,
                  uint8_t bpp, uint32_t pitch, uint32_t bo_handle,
                  uint32_t *buf_id)
 {
   uint32_t udl_fb_id;
-  int ret, dma_fd;
+  uint32_t format;
+  int ret;
 
   ret = _drmModeAddFB(fd, width, height, depth, bpp, pitch, bo_handle, buf_id);
   if (ret < 0 || udl_is_udl(fd))
@@ -577,25 +627,73 @@ int drmModeAddFB(int fd, uint32_t width, uint32_t height, uint8_t depth,
   if (!UDL_VALID())
     return 0;
 
-  ret = drmPrimeHandleToFD(fd, bo_handle, DRM_CLOEXEC | DRM_RDWR, &dma_fd);
-  if (ret < 0)
+  if (bpp == 16 && depth == 16)
+    format = DRM_FORMAT_RGB565;
+  else if (bpp == 32 && (depth == 32 || depth == 24))
+    format = DRM_FORMAT_XRGB8888;
+  else
     return 0;
 
-  ret = drmPrimeFDToHandle(udl_ctx.fd, dma_fd, &bo_handle);
-  close(dma_fd);
-  if (ret < 0)
-    return 0;
-
-  ret = _drmModeAddFB(udl_ctx.fd, width, height, depth, bpp, pitch,
-                      bo_handle, &udl_fb_id);
-  drmCloseBufferHandle(udl_ctx.fd, bo_handle);
-  if (ret < 0)
+  udl_fb_id = udl_import_handle(fd, bo_handle, width, height, pitch, format);
+  if (!udl_fb_id)
     return 0;
 
   DRM_DEBUG("add UDL FB(%d)\n", udl_fb_id);
 
   *buf_id = WRAP_UDL_FB(*buf_id, udl_fb_id);
   return 0;
+}
+
+int drmModeAddFB2(int fd, uint32_t width, uint32_t height,
+                  uint32_t pixel_format, const uint32_t bo_handles[4],
+                  const uint32_t pitches[4], const uint32_t offsets[4],
+                  uint32_t *buf_id, uint32_t flags)
+{
+  uint32_t udl_fb_id;
+  int ret;
+
+  ret = _drmModeAddFB2(fd, width, height, pixel_format, bo_handles,
+                       pitches, offsets, buf_id, flags);
+  if (ret < 0 || udl_is_udl(fd))
+    return ret;
+
+  DRM_DEBUG("add FB(%d)\n", *buf_id);
+
+  if (!UDL_VALID())
+    return 0;
+
+  if (udl_format_supported(pixel_format))
+    return 0;
+
+  /* UDL only supports single-plane */
+  udl_fb_id = udl_import_handle(fd, bo_handles[0], width, height,
+                                pitches[0], pixel_format);
+  if (!udl_fb_id)
+    return 0;
+
+  DRM_DEBUG("add UDL FB(%d)\n", udl_fb_id);
+
+  *buf_id = WRAP_UDL_FB(*buf_id, udl_fb_id);
+  return 0;
+}
+
+int drmModeAddFB2WithModifiers(int fd, uint32_t width, uint32_t height,
+                               uint32_t pixel_format, const uint32_t bo_handles[4],
+                               const uint32_t pitches[4], const uint32_t offsets[4],
+                               const uint64_t modifier[4], uint32_t *buf_id,
+                               uint32_t flags)
+{
+  int i;
+
+  for (i = 0; i < 4; i++) {
+    if (modifier[i] || modifier[i] != DRM_FORMAT_MOD_INVALID)
+      return _drmModeAddFB2WithModifiers(fd, width, height, pixel_format,
+                                         bo_handles, pitches, offsets, modifier,
+                                         buf_id, flags);
+  }
+
+  return drmModeAddFB2(fd, width, height, pixel_format, bo_handles,
+                       pitches, offsets, buf_id, flags);
 }
 
 int drmModeRmFB(int fd, uint32_t fb_id)
@@ -727,9 +825,9 @@ drmModeCrtcPtr drmModeGetCrtc(int fd, uint32_t crtc_id)
  */
 static uint32_t udl_import_fb(int fd, uint32_t fb_id)
 {
-  drmModeFBPtr fb;
-  uint32_t handle, import_fb_id;
-  int dma_fd, ret;
+  drmModeFB2Ptr fb;
+  uint32_t import_fb_id;
+  int i;
 
   if (!fb_id)
     return 0;
@@ -739,28 +837,27 @@ static uint32_t udl_import_fb(int fd, uint32_t fb_id)
   import_fb_id = fb_id;
   fb_id = 0;
 
-  fb = _drmModeGetFB(fd, import_fb_id);
+  fb = _drmModeGetFB2(fd, import_fb_id);
   if (!fb)
     return 0;
 
-  ret = drmPrimeHandleToFD(fd, fb->handle, DRM_CLOEXEC | DRM_RDWR, &dma_fd);
-  drmCloseBufferHandle(fd, fb->handle);
-  if (ret < 0)
+  if (!udl_format_supported(fb->pixel_format))
     goto out;
 
-  ret = drmPrimeFDToHandle(udl_ctx.fd, dma_fd, &handle);
-  close(dma_fd);
-  if (ret < 0)
+  /* UDL only supports single-plane */
+  fb_id = udl_import_handle(fd, fb->handles[0], fb->width, fb->height,
+                            fb->pitches[0], fb->pixel_format);
+  if (!fb_id)
     goto out;
 
-  _drmModeAddFB(udl_ctx.fd, fb->width, fb->height, fb->depth, fb->bpp, fb->pitch,
-                handle, &fb_id);
-  if (fb_id)
-    DRM_DEBUG("import FB(%d) -> FB(%d)\n", import_fb_id, fb_id);
-
-  drmCloseBufferHandle(udl_ctx.fd, handle);
+  DRM_DEBUG("import FB(%d) -> FB(%d)\n", import_fb_id, fb_id);
 out:
-  drmModeFreeFB(fb);
+  for (i = 0; i < 4; i++) {
+    if (fb->handles[i])
+      drmCloseBufferHandle(fd, fb->handles[i]);
+  }
+
+  drmModeFreeFB2(fb);
   return fb_id;
 }
 
