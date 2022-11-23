@@ -883,9 +883,6 @@ int drmModeSetCrtc(int fd, uint32_t crtc_id, uint32_t fb_id,
     return -ENODEV;
   }
 
-  for (i = 0; i < count; i++)
-    connectors[i] = UNWRAP_UDL_ID(connectors[i]);
-
   /* Convert FB for UDL */
   if (udl_fb_id) {
     fb_id = udl_fb_id;
@@ -900,8 +897,14 @@ int drmModeSetCrtc(int fd, uint32_t crtc_id, uint32_t fb_id,
   pthread_mutex_lock(&udl_ctx.mutex);
   DRM_DEBUG("set FB(%d) on CRTC(%d) to (%d,%d)\n",
             fb_id, udl_ctx.crtc_id, x, y);
+
+  for (i = 0; i < count; i++)
+    connectors[i] = UNWRAP_UDL_ID(connectors[i]);
   ret = _drmModeSetCrtc(udl_ctx.fd, udl_ctx.crtc_id, fb_id,
                         x, y, connectors, count, mode);
+  for (i = 0; i < count; i++)
+    connectors[i] = WRAP_UDL_ID(connectors[i]);
+
   if (!ret) {
     udl_ctx.curr_fb_id = fb_id;
     if (mode)
