@@ -825,9 +825,13 @@ drmModeCrtcPtr drmModeGetCrtc(int fd, uint32_t crtc_id)
  */
 static uint32_t udl_import_fb(int fd, uint32_t fb_id)
 {
-  drmModeFB2Ptr fb;
-  uint32_t import_fb_id;
+#ifdef HAS_DRM_MODE_FB2
+  drmModeFB2Ptr fb2 = NULL;
   int i;
+#endif
+  drmModeFBPtr fb = NULL;
+  uint32_t import_fb_id;
+  uint32_t handle, pitch, width, height, pixel_format;
 
   if (!fb_id)
     return 0;
@@ -836,28 +840,71 @@ static uint32_t udl_import_fb(int fd, uint32_t fb_id)
 
   import_fb_id = fb_id;
   fb_id = 0;
+  handle = 0;
 
-  fb = _drmModeGetFB2(fd, import_fb_id);
-  if (!fb)
-    return 0;
+#ifdef HAS_DRM_MODE_FB2
+  fb2 = _drmModeGetFB2(fd, import_fb_id);
+  if (fb2) {
+    handle = fb2->handles[0];
+    pitch = fb2->pitches[0];
+    width = fb2->width;
+    height = fb2->height;
+    pixel_format = fb2->pixel_format;
 
-  if (!udl_format_supported(fb->pixel_format))
+    if (!handle)
+      goto out;
+  }
+#endif
+
+  if (!handle) {
+    fb = _drmModeGetFB(fd, import_fb_id);
+    if (!fb)
+      return 0;
+
+    handle = fb->handle;
+    pitch = fb->pitch;
+    width = fb->width;
+    height = fb->height;
+
+    switch (fb->bpp) {
+    case 32:
+      if (fb->depth == 32)
+        pixel_format = DRM_FORMAT_ARGB8888;
+      else
+        pixel_format = DRM_FORMAT_XRGB8888;
+      break;
+    case 16:
+      pixel_format = DRM_FORMAT_RGB565;
+      break;
+    default:
+      goto out;
+    }
+  }
+
+  if (!udl_format_supported(pixel_format))
     goto out;
 
   /* UDL only supports single-plane */
-  fb_id = udl_import_handle(fd, fb->handles[0], fb->width, fb->height,
-                            fb->pitches[0], fb->pixel_format);
+  fb_id = udl_import_handle(fd, handle, width, height, pitch, pixel_format);
   if (!fb_id)
     goto out;
 
   DRM_DEBUG("import FB(%d) -> FB(%d)\n", import_fb_id, fb_id);
 out:
-  for (i = 0; i < 4; i++) {
-    if (fb->handles[i])
-      drmCloseBufferHandle(fd, fb->handles[i]);
-  }
+#ifdef HAS_DRM_MODE_FB2
+  if (fb2) {
+    for (i = 0; i < 4; i++) {
+      if (fb2->handles[i])
+        drmCloseBufferHandle(fd, fb2->handles[i]);
+    }
 
-  drmModeFreeFB2(fb);
+    drmModeFreeFB2(fb2);
+  }
+#endif
+  if (fb) {
+    drmCloseBufferHandle(fd, fb->handle);
+    drmModeFreeFB(fb);
+  }
   return fb_id;
 }
 
